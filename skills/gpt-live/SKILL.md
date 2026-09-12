@@ -114,6 +114,14 @@ Prefer Responses delegation when the managed workflow fits (you want OpenAI to p
 - Repeated appends can continue the same delegation; stream coherent, verified chunks rather than one final blob.
 - **A spoken interruption does not cancel backend work.** If the user changes the task, your application decides whether to cancel, re-task, or let the old work finish. Before announcing a cancellation or a success, verify the action actually happened. On a lost response, check whether the original action already occurred before retrying — a retry must not double-book.
 
+### Append acknowledgments and session lifetime
+
+The `*.appended` acknowledgments (`session.commentary.appended`, `session.thinking.appended`, `session.instructions.appended`) match your outgoing `event_id` via their `client_event_id`. Three invariants verified against a live session:
+
+- **Frame progress feeds the ack.** The acknowledgment waits until the session's frame timeline reaches the estimated end of context injection. If no audio frames are flowing (e.g., a headless client stopped sending input after the user's utterance), the timeline freezes and the ack stays pending indefinitely. A real microphone's ambient noise is a natural keepalive; unattended clients and CI must keep sending silence frames while waiting for a backend result, or the result will never be acknowledged and never spoken.
+- **Closing with pending appends loses the result.** `session.close` while an append ack is pending fails it with `context_injection_incomplete` — the text is stranded in context, never spoken. Before closing, drain in-flight appends: await their `*.appended` acks (matched by `event_id`) or fail them explicitly. A backend result computed but not acknowledged is not delivered.
+- **The backchannel is not the answer.** While the backend works, the live model speaks waiting sounds ("mm, let me check") that arrive as ordinary `output_transcript` deltas. Treating the first assistant transcript as "the result arrived" and closing shortly after loses the race with the real result. The reliable completion signal in client mode is your own application state: the delegation is done when its append ack arrives (the relay forwards this as a state change), not when any assistant text appears.
+
 ## Live prompt (`session.instructions`)
 
 The live model has a small context window. Keep the prompt to:
@@ -150,6 +158,9 @@ All entries below come from the official documentation's explicit warnings — t
 | Pitfall | Symptom | Response |
 |---|---|---|
 | Treating the delegation event as carrying the task (client mode) | Backend receives an empty or generic task | Build the task from transcript deltas + application state |
+| Stopping input audio while waiting for a backend result (headless client) | Append ack stays pending; `context_injection_incomplete` on close; result never spoken | Keep sending silence frames to keep frame progress advancing |
+| Sending `session.close` while an append ack is pending | `context_injection_incomplete`; result stranded in context | Drain in-flight appends (await `*.appended` by `event_id`) before closing |
+| Treating the first assistant transcript (backchannel) as the result | Session closed on a timer before the real result; result lost | Completion signal is the append ack / application state, not assistant text |
 | Assuming empty `response.output` means no pending calls | Tool result never submitted; backend response hangs | Collect completed calls from `response.output_item.done` only |
 | Submitting a function output and expecting the response to continue | Backend response never completes | Always follow `response.item.create` with `response.create` |
 | Attempting to switch delegation mode mid-session | `immutable_field_update` error | Start a new session |
