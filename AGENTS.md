@@ -1,4 +1,4 @@
-# AGENTS.md — gpt-live-examples
+# AGENTS.md — gpt-live-skill
 
 ## Role
 
