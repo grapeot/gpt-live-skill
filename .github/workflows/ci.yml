@@ -1,0 +1,19 @@
+name: CI
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  privacy-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for secrets and private handles
+        run: |
+          if rg -n "o[p]://|/[U]sers/[a-z]|sk-[A-Za-z0-9_-]{16,}|BEGIN [A-Z ]*PRIVATE KEY|grapeot[@]" .; then
+            echo "::error::Potential secret or private handle found. Fix before merging."
+            exit 1
+          fi
+          echo "Privacy scan clean."
