@@ -122,6 +122,18 @@ The `*.appended` acknowledgments (`session.commentary.appended`, `session.thinki
 - **Closing with pending appends loses the result.** `session.close` while an append ack is pending fails it with `context_injection_incomplete` — the text is stranded in context, never spoken. Before closing, drain in-flight appends: await their `*.appended` acks (matched by `event_id`) or fail them explicitly. A backend result computed but not acknowledged is not delivered.
 - **The backchannel is not the answer.** While the backend works, the live model speaks waiting sounds ("mm, let me check") that arrive as ordinary `output_transcript` deltas. Treating the first assistant transcript as "the result arrived" and closing shortly after loses the race with the real result. The reliable completion signal in client mode is your own application state: the delegation is done when its append ack arrives (the relay forwards this as a state change), not when any assistant text appears.
 
+- **The backchannel is not the answer.** While the backend works, the live model speaks waiting sounds ("mm, let me check") that arrive as ordinary `output_transcript` deltas. Treating the first assistant transcript as "the result arrived" and closing shortly after loses the race with the real result. The reliable completion signal in client mode is your own application state: the delegation is done when its append ack arrives (the relay forwards this as a state change), not when any assistant text appears.
+
+### Backend submission, timeouts, and late results
+
+Four behaviors verified with a client-delegation relay over an agent backend (each fixed a live failure):
+
+- **A synchronous backend submission blocks until the whole generation finishes.** A plain task took ~4 s and a real lookup blew past the HTTP client's default 30 s timeout — the relay declared failure while the backend was still working. Submit backend work asynchronously (submit-then-poll: return immediately, then poll the backend's busy/idle status) so your `DELEGATION_WAIT_SECONDS` budget, not an HTTP client timeout, governs the wait. Warm-up submissions (e.g., a role prompt at session start) belong to the same session and must finish before the first delegation, or the two will race.
+- **A timeout is not a failure.** When the budget expires, the live model should say it is still waiting — and the relay should keep waiting in the background for a late result, then inject it via a second append when it arrives. Guard the late delivery: drop it if the session is closing or a newer delegation has replaced this one, so an outdated answer is never spoken.
+- **Cancelling the local wait does not stop the backend.** `task.cancel()` on your relay only unwinds the local await; the backend's server-side run keeps consuming tools after the user pressed stop. Issue an explicit abort to the backend on close, and do not let a failed abort block the rest of the shutdown.
+- **The backend agent needs search-scope rules in its prompt.** Asked about a vague directory, an agent will happily run a whole-tree `find`/`grep -r` and burn the entire time budget. Put constraints in the backend prompt: no unbounded recursive searches, avoid dependency/cache directories, disambiguate vague targets first, keep single queries to seconds.
+- **Feed the backend sentences, not transcripts.** A word-by-word delta list with millisecond ranges per token is token-expensive and hard for the backend to read. Merge adjacent same-role spans into plain sentences and describe the window as "the last 15 seconds", not as offsets.
+
 ## Live prompt (`session.instructions`)
 
 The live model has a small context window. Keep the prompt to:
@@ -161,6 +173,11 @@ All entries below come from the official documentation's explicit warnings — t
 | Stopping input audio while waiting for a backend result (headless client) | Append ack stays pending; `context_injection_incomplete` on close; result never spoken | Keep sending silence frames to keep frame progress advancing |
 | Sending `session.close` while an append ack is pending | `context_injection_incomplete`; result stranded in context | Drain in-flight appends (await `*.appended` by `event_id`) before closing |
 | Treating the first assistant transcript (backchannel) as the result | Session closed on a timer before the real result; result lost | Completion signal is the append ack / application state, not assistant text |
+| Submitting backend work with a blocking synchronous request | HTTP client timeout fires while the backend still runs; relay declares failure mid-generation | Submit async and poll the backend's busy/idle status; let the app's time budget govern |
+| Abandoning a backend result when the wait budget expires | User hears only "still checking"; the correct answer arrives later and is dropped | Announce the wait, keep listening in the background, inject the late result with staleness guards |
+| Cancelling only the local wait on shutdown | Backend run keeps consuming tools after the user pressed stop | Abort the backend run explicitly on close; don't let a failed abort block shutdown |
+| Letting the backend agent run unbounded whole-tree searches | One vague query burns the entire time budget (e.g., an 88 s `find`) | Put search-scope constraints in the backend prompt: bounded queries, skip dependency/cache dirs |
+| Feeding the backend a word-by-word transcript with millisecond ranges | Token-expensive, hard to read | Merge same-role spans into sentences; describe the window in plain language |
 | Assuming empty `response.output` means no pending calls | Tool result never submitted; backend response hangs | Collect completed calls from `response.output_item.done` only |
 | Submitting a function output and expecting the response to continue | Backend response never completes | Always follow `response.item.create` with `response.create` |
 | Attempting to switch delegation mode mid-session | `immutable_field_update` error | Start a new session |

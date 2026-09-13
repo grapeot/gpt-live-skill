@@ -2,6 +2,15 @@
 
 ## Changelog
 
+### 2026-09-13
+- Added "Backend submission, timeouts, and late results" to the client-delegation guidance, from five live failures in a relay + agent-backend integration (four merged PRs, each verified with offline tests plus a live e2e):
+  - synchronous backend submission blocked until generation finished and blew an HTTP timeout, so the relay declared failure mid-run → submit async and poll busy/idle
+  - an expired wait budget dropped the correct answer that arrived later → announce the wait, keep listening, inject the late result with staleness guards
+  - cancelling the relay's local await left the backend run consuming tools for 208 s after the user pressed stop → abort the backend explicitly on close
+  - an agent interpreted a vague "src directory" as a whole-tree search (88 s `find`) and burned the entire budget → search-scope rules belong in the backend prompt
+  - the relay fed the backend a word-by-word transcript with millisecond ranges → merge same-role spans into plain sentences
+- Five matching rows in known pitfalls. All verified offline (unit tests over fake backends) and live (e2e with `gpt-live-1` + OpenCode).
+
 ### 2026-09-12
 - Initial scaffold: README, GPT-Live skill (`skills/gpt-live/SKILL.md`), AGENTS.md, `.env.example`, CI privacy scan
 - Skill covers: three-layer architecture, delegation modes (Responses vs client), session lifecycle, audio format rules, delegation cycle handling, live prompt guidance, security boundary, acceptance criteria, known pitfalls
